@@ -1,0 +1,15 @@
+mqtt:
+  host: 127.0.0.1
+  port: 1883
+  username: ""
+  password: ""
+  base_topic: "victron"
+
+victron:
+  # One or more Victron BLE devices. The key is the MAC address.
+  # Find MAC in VictronConnect or via `bluetoothctl scan on`.
+  # Get the per-device "Advertisement/Encryption key" from VictronConnect logs or guides (paste as a 32-hex string).
+  devices:
+    "AA:BB:CC:DD:EE:FF":
+      name: "smartsolar_roof"
+      adv_key: "eb8c557386614231dbd741db97e457c5"

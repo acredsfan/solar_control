@@ -1,0 +1,18 @@
+[Unit]
+Description=Victron BLE to MQTT Bridge
+After=network-online.target bluetooth.target
+Wants=network-online.target bluetooth.target
+
+[Service]
+Type=simple
+User=pi
+WorkingDirectory=/home/pi/victron-ble-bridge
+ExecStart=/usr/bin/python3 /home/pi/victron-ble-bridge/victron_bridge.py /home/pi/victron-ble-bridge/config.yaml
+Restart=on-failure
+RestartSec=5
+
+# Give DBus/BlueZ time to come up on Zero 2W
+ExecStartPre=/bin/sleep 5
+
+[Install]
+WantedBy=multi-user.target
