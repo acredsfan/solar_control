@@ -4,6 +4,35 @@ mqtt:
   username: ""
   password: ""
   base_topic: "victron"
+  # Optional TLS block (enable + CA / client certificates)
+  # tls:
+  #   enabled: false
+  #   ca_cert: /path/to/ca.crt
+  #   certfile: /path/to/client.crt
+  #   keyfile: /path/to/client.key
+
+bridge:
+  # Seconds to suppress unchanged consecutive publishes (0 disables throttling)
+  throttle_seconds: 5
+  # Enable Home Assistant MQTT Discovery
+  home_assistant_discovery: true
+  # Publish unknown Victron MACs (no decryption) under <base>/unknown/<MAC>/
+  publish_unknown_devices: false
+  # Mark device offline if not seen within this many seconds
+  device_timeout_seconds: 120
+  # Interval (seconds) for publishing bridge stats JSON
+  stats_interval_seconds: 60
+  # Optional custom topic root for unknown devices (default <base>/unknown)
+  # unknown_topic: "victron/unknown"
+  # Optional per-metric delta thresholds (publish only if abs(delta) >= threshold)
+  # per_metric_thresholds:
+  #   voltage: 0.02   # Volts
+  #   current: 0.05   # Amps
+  #   power: 1        # Watts
+  # Enable simple derived metrics (e.g., derive power_w = voltage * current when absent)
+  enable_basic_derived_metrics: true
+  # Optional Prometheus exporter port (0 disables)
+  prometheus_port: 0
 
 victron:
   # One or more Victron BLE devices. The key is the MAC address.
@@ -11,5 +40,30 @@ victron:
   # Get the per-device "Advertisement/Encryption key" from VictronConnect logs or guides (paste as a 32-hex string).
   devices:
     "AA:BB:CC:DD:EE:FF":
-      name: "smartsolar_roof"
+      name: "smartsolar_lawnberry_pi"  # Lawnberry Pi autonomous mower solar controller
       adv_key: "eb8c557386614231dbd741db97e457c5"
+control:
+  # Enable VE.Direct load control (optional). Provide serial port path.
+  vedirect_port: "/dev/ttyUSB0"  # Set to actual VE.Direct USB serial device
+  enabled: false                  # Set true to activate load control
+  # MQTT command topic (incoming): <base>/<control_device>/load/command (ON/OFF)
+  control_device_name: controller # Name used in topics if different from actual device
+  # method: vedirect (default) or modbus
+  method: vedirect
+  # For modbus method (SmartSolar usually unit id 0x01)
+  modbus:
+    unit_id: 1
+    # Holding register to write ON/OFF (documented in Victron Modbus sheet). Placeholder value below; update!
+    load_register: 0x0120
+    on_value: 1
+    off_value: 0
+  # Sunrise/Sunset automation (optional)
+  sunrise_sunset:
+    enabled: false
+    latitude: 0.0
+    longitude: 0.0
+    on_at_sunrise: true
+    off_at_sunset: true
+    # Optional offsets in minutes
+    sunrise_offset_min: 0
+    sunset_offset_min: 0
