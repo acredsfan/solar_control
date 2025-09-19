@@ -40,6 +40,7 @@ bridge:
     current: 0.05
   enable_basic_derived_metrics: true  # Derive simple metrics (currently power_w)
   prometheus_port: 0                  # >0 enables /metrics exporter
+  web_ui_port: 0                      # >0 enables built-in lightweight diagnostic web UI
 
 victron:
   devices:

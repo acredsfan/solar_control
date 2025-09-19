@@ -26,6 +26,7 @@ The codebase focuses on minimal per-advert overhead to stay performant on constr
 | Unknown Devices | Optional raw advert publishing | Complete | Under `<base>/unknown/...`. |
 | Stats | Bridge stats JSON | Complete | Includes counters and load state/actions. |
 | Prometheus | `/metrics` exporter | Complete | Simple text HTTP listener. |
+| Web UI | Lightweight built-in HTML dashboard | Added | Optional `bridge.web_ui_port` serves stats/devices/load control. |
 | Security | Optional TLS for MQTT | Complete | Basic CA + client cert parameters. |
 | Load Control | VE.Direct reader + optimistic toggle | Complete | Placeholder write; read-derived state. |
 | Load Control | Modbus single register write (0x06) | Complete | Direct value mode (`on_value`/`off_value`). |
@@ -82,6 +83,7 @@ Bitfield Mode Rules:
 | High | Validate VE.Direct write command format | Placeholder may not match actual command set | Consult Victron VE.Direct protocol reference; adjust `turn_on/turn_off`. |
 | Medium | Add inversion flag (`invert: true`) | Some devices use active-low bits | Extend modbus config & apply XOR in determination. |
 | Medium | Add HA binary_sensor for load availability | Improve dashboard clarity | Publish discovery config referencing same state topic. |
+| Medium | Auth / bind controls for Web UI | Security hardening | Optionally restrict to localhost or add simple token. |
 | Medium | Per-device Prometheus gauges | Observability for RSSI, last_seen age | Add metrics inside `_prometheus_metrics_text`. |
 | Low | State persistence across restarts | Prevent stale throttling or duplicated discovery churn | Save last `values` + metric cache to a small JSON; reload at startup. |
 | Low | Relative (%) thresholds or hysteresis | More flexible publish suppression | Extend threshold logic with strategy field per metric. |
@@ -156,3 +158,19 @@ Bitfield Mode Rules:
 
 ---
 Prepared for handover. Update `copilot-instructions.md` next to include the new `bit_index` key under Modbus config.
+
+## 14. Built-in Web UI Summary
+Configuration: set `bridge.web_ui_port: 8080` (non-zero) to enable.
+
+Endpoints (no auth, for local diagnostics):
+```
+GET /              # HTML page (devices, stats, load control buttons if enabled)
+GET /api/stats     # JSON stats snapshot
+GET /api/devices   # JSON array: {name,mac,available,last_seen,rssi,values}
+GET /api/load      # JSON: {enabled,state,method}
+POST /api/load     # Body {"state":"ON"|"OFF"}
+```
+Notes:
+- Uses Python stdlib `http.server` (no extra dependency footprint).
+- Auto-refresh every 3s via fetch.
+- Intended for LAN-only; consider reverse proxy or firewall if exposed.

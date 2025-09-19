@@ -92,6 +92,7 @@ class VictronBridge:
         }
         self._derive_basic = bool(bridge_cfg.get("enable_basic_derived_metrics", False))
         self._prom_port = int(bridge_cfg.get("prometheus_port", 0))
+        self._web_ui_port = int(bridge_cfg.get("web_ui_port", 0))  # 0 disables built-in web UI
 
         # State
         self._last_values: Dict[str, Dict[str, Any]] = {}
@@ -101,6 +102,7 @@ class VictronBridge:
         self._unknown_devices: Dict[str, Dict[str, Any]] = {}
         self._device_last_seen: Dict[str, float] = {}
         self._device_available: Dict[str, bool] = {}
+        self._device_last_rssi: Dict[str, int] = {}
         # Stats
         self._start_time = time.time()
         self._messages_published = 0
@@ -110,6 +112,8 @@ class VictronBridge:
         self._maint_task: Optional[asyncio.Task] = None
         self._prom_server: Optional[HTTPServer] = None
         self._prom_thread: Optional[threading.Thread] = None
+        self._web_server: Optional[HTTPServer] = None
+        self._web_thread: Optional[threading.Thread] = None
         # Control (VE.Direct load)
         control_cfg = cfg.get("control", {})
         self._control_enabled = bool(control_cfg.get("enabled", False))
@@ -310,9 +314,164 @@ class VictronBridge:
         self._prom_thread = thread
         LOGGER.info("Prometheus metrics exporter listening on :%s/metrics", self._prom_port)
 
+    # ------------------- Built-in Web UI (optional) --------------------
+    def _current_stats(self) -> Dict[str, Any]:
+        """Snapshot of current stats (mirrors MQTT bridge/stats)."""
+        now = time.time()
+        return {
+            "uptime_s": int(now - self._start_time),
+            "adverts_seen": self._adverts_seen,
+            "messages_published": self._messages_published,
+            "throttled_skipped": self._throttled_skipped,
+            "metric_suppressed": self._metric_suppressed,
+            "known_devices": len(self.device_map),
+            "unknown_devices": len(self._unknown_devices),
+            "load_actions": self._load_actions,
+            "load_state": None if self._load_state is None else (1 if self._load_state else 0),
+        }
+
+    def _json(self, handler: BaseHTTPRequestHandler, code: int, obj: Any):  # type: ignore
+        data = json.dumps(obj, separators=(",", ":")).encode()
+        handler.send_response(code)
+        handler.send_header("Content-Type", "application/json")
+        handler.send_header("Content-Length", str(len(data)))
+        handler.end_headers(); handler.wfile.write(data)
+
+    def _start_web_ui(self):
+        if self._web_ui_port <= 0:
+            return
+        bridge_ref = self
+        INDEX_HTML = ("""
+<!DOCTYPE html><html lang=\"en\"><head><meta charset=\"utf-8\"/>
+<title>Victron Bridge UI</title>
+<style>
+body{font-family:system-ui,Arial,sans-serif;margin:1rem;background:#f5f7fa;color:#222}
+header{display:flex;align-items:center;gap:.75rem;margin-bottom:1rem}
+code{background:#eef;padding:2px 4px;border-radius:3px}
+table{border-collapse:collapse;width:100%;margin-top:1rem}
+th,td{border:1px solid #ccc;padding:4px 6px;font-size:.85rem;text-align:left}
+th{background:#e6edf3}
+button{cursor:pointer;padding:.4rem .9rem;font-size:.9rem;border:1px solid #357;border-radius:4px;background:#4689f1;color:#fff}
+button.off{background:#666}
+.pill{display:inline-block;padding:2px 6px;border-radius:12px;font-size:.7rem;color:#fff}
+.on{background:#2e7d32}.off{background:#aa2e25}.unknown{background:#777}
+</style></head><body>
+<header><h2>Victron Bridge</h2><span id=uptime></span></header>
+<section id=loadBox style=\"display:none\">
+  <h3>Load Control</h3>
+  <div>State: <span id=loadState class=\"pill unknown\">unknown</span>
+  <button id=btnOn>Turn ON</button>
+  <button id=btnOff class=off>Turn OFF</button>
+  </div>
+</section>
+<section>
+  <h3>Devices</h3>
+  <table id=devTbl><thead><tr><th>Name</th><th>MAC</th><th>Avail</th><th>RSSI</th><th>Last Seen (s ago)</th><th>Values</th></tr></thead><tbody></tbody></table>
+</section>
+<section>
+  <h3>Stats</h3>
+  <pre id=statsBox>{}</pre>
+</section>
+<script>
+async function j(u,opt){const r=await fetch(u,opt);if(!r.ok) throw new Error(r.status);return r.json();}
+function formatAgo(ts){if(!ts) return '-'; const ago=Math.floor(Date.now()/1000 - ts); return ago+'s';}
+async function refresh(){
+  try{
+    const [stats, devices, load] = await Promise.all([
+      j('api/stats'), j('api/devices'), j('api/load')
+    ]);
+    document.getElementById('statsBox').textContent = JSON.stringify(stats,null,2);
+    document.getElementById('uptime').textContent = 'Uptime '+stats.uptime_s+'s';
+    const tb=document.querySelector('#devTbl tbody'); tb.innerHTML='';
+    devices.forEach(d=>{const tr=document.createElement('tr');
+      tr.innerHTML=`<td>${d.name}</td><td>${d.mac||''}</td><td>${d.available}</td><td>${d.rssi??''}</td><td>${formatAgo(d.last_seen)}</td><td><code>${JSON.stringify(d.values||{})}</code></td>`;tb.appendChild(tr);});
+    const lb=document.getElementById('loadBox');
+    if(load.enabled){ lb.style.display='block'; const stSp=document.getElementById('loadState');
+      stSp.textContent=load.state; stSp.className='pill '+(load.state==='ON'?'on':(load.state==='OFF'?'off':'unknown')); }
+  }catch(e){console.error(e);}
+}
+async function sendLoad(state){await j('api/load',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({state})}); setTimeout(refresh,400);}
+document.getElementById('btnOn').onclick=()=>sendLoad('ON');
+document.getElementById('btnOff').onclick=()=>sendLoad('OFF');
+refresh(); setInterval(refresh,3000);
+</script></body></html>
+""")
+
+        class Handler(BaseHTTPRequestHandler):  # type: ignore
+            def do_GET(self):  # noqa: N802
+                path = self.path.split('?')[0]
+                if path in ('/', '/index.html'):
+                    data = INDEX_HTML.encode()
+                    self.send_response(200)
+                    self.send_header('Content-Type', 'text/html; charset=utf-8')
+                    self.send_header('Content-Length', str(len(data)))
+                    self.end_headers(); self.wfile.write(data); return
+                if path == '/api/stats':
+                    bridge_ref._json(self, 200, bridge_ref._current_stats()); return
+                if path == '/api/devices':
+                    devices = []
+                    for mac, info in bridge_ref.device_map.items():
+                        name = info['name']
+                        devices.append({
+                            'name': name,
+                            'mac': mac,
+                            'available': bool(bridge_ref._device_available.get(mac)),
+                            'last_seen': int(bridge_ref._device_last_seen.get(mac, 0)) or None,
+                            'rssi': bridge_ref._device_last_rssi.get(mac),
+                            'values': bridge_ref._last_values.get(name, {})
+                        })
+                    for mac, u in bridge_ref._unknown_devices.items():
+                        devices.append({
+                            'name': '(unknown)', 'mac': mac, 'available': True,
+                            'last_seen': int(u.get('last_seen', 0)) or None,
+                            'rssi': None, 'values': {}
+                        })
+                    bridge_ref._json(self, 200, devices); return
+                if path == '/api/load':
+                    state = 'UNKNOWN'
+                    if bridge_ref._load_state is not None:
+                        state = 'ON' if bridge_ref._load_state else 'OFF'
+                    bridge_ref._json(self, 200, {
+                        'enabled': bridge_ref._control_enabled,
+                        'state': state,
+                        'method': bridge_ref.cfg.get('control', {}).get('method', 'vedirect')
+                    }); return
+                self.send_response(404); self.end_headers()
+            def do_POST(self):  # noqa: N802
+                if self.path == '/api/load':
+                    if not bridge_ref._control_enabled:
+                        bridge_ref._json(self, 400, {'error': 'control disabled'}); return
+                    length = int(self.headers.get('Content-Length', '0') or 0)
+                    body = self.rfile.read(length) if length else b''
+                    try:
+                        data = json.loads(body.decode() or '{}')
+                        desired = data.get('state','').upper()
+                        if desired not in ('ON','OFF'):
+                            raise ValueError('state must be ON/OFF')
+                        asyncio.get_event_loop().call_soon_threadsafe(
+                            lambda: asyncio.create_task(bridge_ref._apply_load_command(desired=='ON'))
+                        )
+                        bridge_ref._json(self, 200, {'ok': True})
+                    except Exception as exc:  # pragma: no cover
+                        bridge_ref._json(self, 400, {'error': str(exc)})
+                    return
+                self.send_response(404); self.end_headers()
+            def log_message(self, format, *args):  # noqa: A003 - silence
+                return
+
+        try:
+            server = HTTPServer(('0.0.0.0', self._web_ui_port), Handler)
+        except Exception as exc:  # pragma: no cover
+            LOGGER.error('Failed to start web UI server: %s', exc); return
+        self._web_server = server
+        thread = threading.Thread(target=server.serve_forever, name='web-ui', daemon=True)
+        thread.start(); self._web_thread = thread
+        LOGGER.info('Web UI listening on :%s', self._web_ui_port)
+
     async def start(self):
         self._mqtt_connect()
         self._start_prometheus()
+        self._start_web_ui()
         if self._control_enabled and self._vedirect_port:
             self._start_load_controller()
             self._publish_load_state()
@@ -332,6 +491,10 @@ class VictronBridge:
             self.mqtt.loop_stop(); self.mqtt.disconnect()
         if self._maint_task:
             self._maint_task.cancel()
+        if self._prom_server:
+            self._prom_server.shutdown()
+        if self._web_server:
+            self._web_server.shutdown()
         if self._sun_task:
             self._sun_task.cancel()
         if self._load_controller:
@@ -372,6 +535,7 @@ class VictronBridge:
                 except Exception:  # ignore bad casts
                     pass
             self._device_last_seen[mac] = time.time()
+            self._device_last_rssi[mac] = adv.rssi
             if not self._device_available.get(mac):
                 self._device_available[mac] = True
                 self._mqtt_pub(f"{topic_prefix}/availability", "online")

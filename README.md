@@ -53,6 +53,7 @@ bridge:
   publish_unknown_devices: false   # Publish raw adverts for un-configured MACs
   device_timeout_seconds: 120      # Offline threshold for availability
   stats_interval_seconds: 60       # Interval for bridge stats JSON
+  web_ui_port: 0                   # >0 to enable built-in lightweight HTML UI
   # unknown_topic: victron/unknown # Optional override (default <base>/unknown)
   # Per-metric delta thresholds (only publish if change >= threshold)
   per_metric_thresholds:
@@ -201,6 +202,30 @@ If `control.sunrise_sunset.enabled: true` and latitude/longitude are provided, t
 - Turn load ON at (sunrise + optional `sunrise_offset_min`)
 - Turn load OFF at (sunset  + optional `sunset_offset_min`)
 Events recalculate daily using UTC. Manual MQTT commands always override until next scheduled event.
+
+## Built-in Web UI (Optional)
+Set `bridge.web_ui_port` to a non-zero TCP port (e.g. `8080`) to enable a minimalist single-page UI served directly by the bridge (no extra deps):
+
+Endpoints:
+```
+GET  /                # HTML dashboard (devices, stats, optional load control)
+GET  /api/stats       # JSON stats snapshot (same fields as bridge/stats topic)
+GET  /api/devices     # JSON array of devices (configured + unknown if enabled)
+GET  /api/load        # JSON load control status {enabled,state,method}
+POST /api/load        # Body {"state":"ON"|"OFF"} to toggle (if control.enabled)
+```
+Example enable:
+```yaml
+bridge:
+  web_ui_port: 8080
+```
+Then open: `http://<pi-host>:8080/`
+
+Notes:
+- UI auto-refreshes every 3 seconds with fetch() calls.
+- Only exposes load control when `control.enabled: true`.
+- Designed for quick local diagnostics; NOT authenticated—binds 0.0.0.0. Use firewall if network-exposed.
+
 
 ## Migration Option: Using victron-ble2mqtt
 See `MIGRATION_victron_ble2mqtt.md` for a step-by-step guide if you later choose a fuller-featured external implementation.
